@@ -1,52 +1,82 @@
 import os
+import time
+import uuid
 import requests
 import json
 import streamlit as st
 from PIL import Image
 from urllib.parse import urljoin
+from prometheus_client import start_http_server, Counter, Histogram
 
 # Load environment variables
 BACKEND_ENDPOINT = os.getenv("BACKEND_ENDPOINT", "http://localhost:8000")
 
-def submit_feedback(input_text, response_text, rating, feature="summarize"):
-    """Submit feedback to the backend."""
+@st.cache_resource
+def _init_metrics():
+    start_http_server(8000)
+    requests_total = Counter(
+        "http_requests_total",
+        "Total requests made to the backend",
+        ["endpoint", "status"],
+    )
+    duration = Histogram(
+        "http_server_duration_milliseconds",
+        "Backend call duration in milliseconds",
+        ["endpoint"],
+        buckets=[10, 25, 50, 100, 250, 500, 1000, 2500, 5000],
+    )
+    return requests_total, duration
+
+http_requests_total, http_server_duration_milliseconds = _init_metrics()
+
+def submit_feedback(trace_id, rating, feature="summarization"):
+    """Attach thumbs up/down feedback to an MLflow trace."""
     try:
-        payload = {
-            "input_text": input_text,
-            "response_text": response_text,
-            "rating": rating,
-            "feature": feature,
-        }
-        resp = requests.post(
-            urljoin(BACKEND_ENDPOINT, "/feedback"),
-            json=payload,
-            timeout=10,
-        )
+        payload = {"trace_id": trace_id, "rating": rating, "feature": feature}
+        resp = requests.post(urljoin(BACKEND_ENDPOINT, "/feedback"), json=payload, timeout=10)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
         return {"error": str(e)}
 
-def submit_ab_feedback(input_text, response_a, response_b, preference, prompt_mapping, feature="summarize"):
-    """Submit A/B comparison feedback to the backend."""
+def submit_ab_feedback(trace_id_a, trace_id_b, preference, prompt_mapping, feature="summarization"):
+    """Attach A/B preference feedback to both MLflow traces."""
     try:
         payload = {
-            "input_text": input_text,
-            "response_a": response_a,
-            "response_b": response_b,
+            "trace_id_a": trace_id_a,
+            "trace_id_b": trace_id_b,
             "preference": preference,
             "prompt_mapping": prompt_mapping,
             "feature": feature,
         }
-        resp = requests.post(
-            urljoin(BACKEND_ENDPOINT, "/feedback/ab"),
-            json=payload,
-            timeout=10,
-        )
+        resp = requests.post(urljoin(BACKEND_ENDPOINT, "/feedback/ab"), json=payload, timeout=10)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
         return {"error": str(e)}
+
+def backend_call(endpoint, payload, session_id, stream=True, timeout=120):
+    """Make an HTTP call to the backend."""
+    headers = {"Content-Type": "application/json", "X-Session-Id": session_id}
+    start = time.time()
+    try:
+        resp = requests.post(
+            urljoin(BACKEND_ENDPOINT, endpoint),
+            json=payload,
+            headers=headers,
+            stream=stream,
+            timeout=timeout,
+        )
+        http_requests_total.labels(endpoint=endpoint, status=resp.status_code).inc()
+        return resp
+    except Exception:
+        http_requests_total.labels(endpoint=endpoint, status="error").inc()
+        raise
+    finally:
+        http_server_duration_milliseconds.labels(endpoint=endpoint).observe(
+            (time.time() - start) * 1000
+        )
+
 
 # Cache feature flags to avoid repeated requests
 @st.cache_data(ttl=30)  # Cache for 30 seconds (checks more frequently)
@@ -106,6 +136,10 @@ feature = st.sidebar.radio(
     index=0
 )
 
+# Initialize session_id once for all features
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+
 # Main view depending on feature
 st.markdown("""
     <style>
@@ -149,10 +183,19 @@ if feature == "Summarization":
             st.session_state.ab_mapping = None
         if "ab_input" not in st.session_state:
             st.session_state.ab_input = None
+        if "ab_trace_id_a" not in st.session_state:
+            st.session_state.ab_trace_id_a = None
+        if "ab_trace_id_b" not in st.session_state:
+            st.session_state.ab_trace_id_b = None
 
         # Initialize feedback state
         if "chat_feedback" not in st.session_state:
             st.session_state.chat_feedback = {}
+        # Maps chat_history index → MLflow trace_id for feedback attachment
+        if "chat_trace_ids" not in st.session_state:
+            st.session_state.chat_trace_ids = {}
+        if "pending_trace_id" not in st.session_state:
+            st.session_state.pending_trace_id = None
 
         # Display chat history
         chat_container = st.container()
@@ -182,22 +225,22 @@ if feature == "Summarization":
                     # Show feedback buttons under each assistant message if feedback is enabled
                     if feature_flags.get("feedback", False):
                         feedback_key = f"feedback_{i}"
+                        trace_id = st.session_state.chat_trace_ids.get(i)
                         if feedback_key in st.session_state.chat_feedback:
                             rating = st.session_state.chat_feedback[feedback_key]
                             st.markdown(f"<span style='font-size: 0.8em; color: #888;'>{'👍 Thanks for the feedback!' if rating == 'thumbs_up' else '👎 Thanks for the feedback!'}</span>", unsafe_allow_html=True)
-                        else:
-                            # Find the corresponding user message (previous message)
-                            user_msg = st.session_state.chat_history[i - 1]["content"] if i > 0 else ""
+                        elif trace_id:
+                            st.markdown("<span style='font-size: 0.78em; color: #888; font-style: italic;'>Was this summary helpful?</span>", unsafe_allow_html=True)
                             col_up, col_down, _ = st.columns([1, 1, 10])
                             with col_up:
                                 if st.button("👍", key=f"up_{i}"):
-                                    result = submit_feedback(user_msg, msg["content"], "thumbs_up")
+                                    result = submit_feedback(trace_id, "thumbs_up")
                                     if "error" not in result:
                                         st.session_state.chat_feedback[feedback_key] = "thumbs_up"
                                         st.rerun()
                             with col_down:
                                 if st.button("👎", key=f"down_{i}"):
-                                    result = submit_feedback(user_msg, msg["content"], "thumbs_down")
+                                    result = submit_feedback(trace_id, "thumbs_down")
                                     if "error" not in result:
                                         st.session_state.chat_feedback[feedback_key] = "thumbs_down"
                                         st.rerun()
@@ -217,9 +260,8 @@ if feature == "Summarization":
                     """, unsafe_allow_html=True)
                     if st.button("A is better", key="ab_pref_a"):
                         result = submit_ab_feedback(
-                            st.session_state["ab_input"],
-                            st.session_state["ab_response_a"],
-                            st.session_state["ab_response_b"],
+                            st.session_state["ab_trace_id_a"],
+                            st.session_state["ab_trace_id_b"],
                             "a",
                             st.session_state["ab_mapping"],
                         )
@@ -229,6 +271,8 @@ if feature == "Summarization":
                             st.session_state.ab_response_b = None
                             st.session_state.ab_mapping = None
                             st.session_state.ab_input = None
+                            st.session_state.ab_trace_id_a = None
+                            st.session_state.ab_trace_id_b = None
                             st.toast("Thanks! Response A added to the conversation.")
                             st.rerun()
                         else:
@@ -243,9 +287,8 @@ if feature == "Summarization":
                     """, unsafe_allow_html=True)
                     if st.button("B is better", key="ab_pref_b"):
                         result = submit_ab_feedback(
-                            st.session_state["ab_input"],
-                            st.session_state["ab_response_a"],
-                            st.session_state["ab_response_b"],
+                            st.session_state["ab_trace_id_a"],
+                            st.session_state["ab_trace_id_b"],
                             "b",
                             st.session_state["ab_mapping"],
                         )
@@ -255,6 +298,8 @@ if feature == "Summarization":
                             st.session_state.ab_response_b = None
                             st.session_state.ab_mapping = None
                             st.session_state.ab_input = None
+                            st.session_state.ab_trace_id_a = None
+                            st.session_state.ab_trace_id_b = None
                             st.toast("Thanks! Response B added to the conversation.")
                             st.rerun()
                         else:
@@ -263,7 +308,7 @@ if feature == "Summarization":
             # Handle streaming response if awaiting
             if st.session_state.awaiting_response:
                 if feature_flags.get("ab_testing", False):
-                    # A/B mode: stream two responses side by side from /summarize/ab
+                    # A/B mode: stream two responses side by side from /summarization/ab
                     col_a, col_b = st.columns(2)
                     with col_a:
                         st.markdown("**Response A**")
@@ -278,19 +323,12 @@ if feature == "Summarization":
                             ""
                         )
                         payload = {"prompt": last_user_msg}
-                        headers = {"Content-Type": "application/json"}
 
                         response_a = ""
                         response_b = ""
                         ab_mapping = {}
 
-                        with requests.post(
-                            urljoin(BACKEND_ENDPOINT, "/summarize/ab"),
-                            json=payload,
-                            headers=headers,
-                            stream=True,
-                            timeout=120
-                        ) as response:
+                        with backend_call("/summarization/ab", payload, st.session_state.session_id) as response:
                             response.raise_for_status()
 
                             for line in response.iter_lines():
@@ -308,6 +346,14 @@ if feature == "Summarization":
 
                                         if data.get("type") == "ab_config":
                                             ab_mapping = data.get("mapping", {})
+                                            continue
+
+                                        if data.get("type") == "trace_id_a":
+                                            st.session_state.ab_trace_id_a = data.get("trace_id")
+                                            continue
+
+                                        if data.get("type") == "trace_id_b":
+                                            st.session_state.ab_trace_id_b = data.get("trace_id")
                                             continue
 
                                         if data.get("error"):
@@ -353,20 +399,29 @@ if feature == "Summarization":
 
                 else:
                     streaming_placeholder = st.empty()
+                    streaming_placeholder.markdown("""
+                    <div style='background-color: #f1f8e9; padding: 12px 15px; border-radius: 15px; margin: 8px 0; max-width: 80%;'>
+                        <strong style='color: #558b2f;'>Assistant</strong><br>
+                        <span style='display:inline-flex; gap:4px; margin-top:4px;'>
+                            <span style='width:8px;height:8px;border-radius:50%;background:#558b2f;animation:canopy-dot 1.4s infinite both;animation-delay:0s;'></span>
+                            <span style='width:8px;height:8px;border-radius:50%;background:#558b2f;animation:canopy-dot 1.4s infinite both;animation-delay:0.2s;'></span>
+                            <span style='width:8px;height:8px;border-radius:50%;background:#558b2f;animation:canopy-dot 1.4s infinite both;animation-delay:0.4s;'></span>
+                        </span>
+                    </div>
+                    <style>
+                    @keyframes canopy-dot {
+                        0%, 80%, 100% { opacity: 0.15; transform: scale(0.8); }
+                        40% { opacity: 1; transform: scale(1); }
+                    }
+                    </style>
+                    """, unsafe_allow_html=True)
 
                     # Fetch the response
                     try:
                         messages = [{"role": msg["role"], "content": msg["content"]} for msg in st.session_state.chat_history]
-                        payload = {"messages": messages}
-                        headers = {"Content-Type": "application/json"}
+                        payload = {"messages": messages, "session_id": st.session_state.session_id}
 
-                        with requests.post(
-                            urljoin(BACKEND_ENDPOINT, "/summarize/chat"),
-                            json=payload,
-                            headers=headers,
-                            stream=True,
-                            timeout=120
-                        ) as response:
+                        with backend_call("/summarization/chat", payload, st.session_state.session_id) as response:
                             response.raise_for_status()
                             assistant_response = ""
 
@@ -381,6 +436,10 @@ if feature == "Summarization":
                                         try:
                                             data = json.loads(data_str)
                                         except json.JSONDecodeError:
+                                            continue
+
+                                        if data.get("type") == "trace_id":
+                                            st.session_state.pending_trace_id = data.get("trace_id")
                                             continue
 
                                         if data.get("type") == "shield_violation":
@@ -403,9 +462,13 @@ if feature == "Summarization":
                                             </div>
                                             """, unsafe_allow_html=True)
 
-                            # Save complete response
+                            # Save complete response and associate trace_id for feedback
                             if assistant_response:
                                 st.session_state.chat_history.append({"role": "assistant", "content": assistant_response})
+                                if st.session_state.pending_trace_id:
+                                    msg_idx = len(st.session_state.chat_history) - 1
+                                    st.session_state.chat_trace_ids[msg_idx] = st.session_state.pending_trace_id
+                                    st.session_state.pending_trace_id = None
                             st.session_state.awaiting_response = False
                             st.rerun()
 
@@ -429,30 +492,35 @@ if feature == "Summarization":
 
         user_input = st.text_area("Your message:", height=100, key=f"chat_input_{st.session_state.input_key}", placeholder="Type your message here...")
 
-        col1, col2, col3 = st.columns([2, 1, 1])
-        with col1:
-            # Calculate tokens based on entire conversation + current message
-            total_conversation = "\n".join([msg["content"] for msg in st.session_state.chat_history])
-            total_text = total_conversation + "\n" + user_input
-            approx_token_count = len(total_text) // 4
-            tokens_left = MAX_TOKENS - approx_token_count - 50
-            color = "red" if tokens_left <= 0 else ("orange" if tokens_left < 100 else "green")
-            st.markdown(f"<span style='color:{color}; font-size: 0.9em;'>🧮 Tokens left (conversation): {tokens_left}</span>", unsafe_allow_html=True)
+        # Calculate tokens based on entire conversation + current message
+        total_conversation = "\n".join([msg["content"] for msg in st.session_state.chat_history])
+        total_text = total_conversation + "\n" + user_input
+        approx_token_count = len(total_text) // 4
+        tokens_left = MAX_TOKENS - approx_token_count - 50
+        color = "red" if tokens_left <= 0 else ("orange" if tokens_left < 100 else "green")
+        st.markdown(f"<span style='color:{color}; font-size: 0.9em;'>Tokens left (conversation): {tokens_left}</span>", unsafe_allow_html=True)
 
-        with col2:
-            clear_chat = st.button("🗑️ Clear Chat", key="clear_chat")
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            clear_chat = st.button("🗑️ Clear Chat", key="clear_chat", use_container_width=True)
             if clear_chat:
                 st.session_state.chat_history = []
                 st.session_state.awaiting_response = False
+                st.session_state.session_id = str(uuid.uuid4())
                 st.session_state.ab_response_a = None
                 st.session_state.ab_response_b = None
                 st.session_state.ab_mapping = None
                 st.session_state.ab_input = None
+                st.session_state.ab_trace_id_a = None
+                st.session_state.ab_trace_id_b = None
+                st.session_state.chat_trace_ids = {}
+                st.session_state.pending_trace_id = None
+                st.session_state.chat_feedback = {}
                 st.session_state.input_key += 1
                 st.rerun()
 
-        with col3:
-            send_button = st.button("Send 💬", key="send_message", type="primary")
+        with col2:
+            send_button = st.button("Send 💬", key="send_message", type="primary", use_container_width=True)
 
         # Check if we need to start streaming (phase 2)
         if st.session_state.get("start_streaming", False):
@@ -475,6 +543,8 @@ if feature == "Summarization":
                     st.session_state.ab_response_b = None
                     st.session_state.ab_mapping = None
                     st.session_state.ab_input = None
+                    st.session_state.ab_trace_id_a = None
+                    st.session_state.ab_trace_id_b = None
                 # Phase 1: Add message and clear input
                 st.session_state.chat_history.append({"role": "user", "content": user_input})
                 st.session_state.input_key += 1
@@ -514,17 +584,8 @@ elif feature == "Information Search":
                         payload = {
                             "prompt": user_input
                         }
-                        headers = {
-                            "Content-Type": "application/json",
-                        }
 
-                        with requests.post(
-                            urljoin(BACKEND_ENDPOINT, "/information-search"),
-                            json=payload,
-                            headers=headers,
-                            stream=True,
-                            timeout=120
-                        ) as response:
+                        with backend_call("/information-search", payload, st.session_state.session_id) as response:
                             response.raise_for_status()
                             answer = ""
                             st.success("Here's your Information Search answer:")
@@ -542,7 +603,6 @@ elif feature == "Information Search":
                                         if delta:
                                             answer += delta
                                             answer_box.text_area("Information Search Answer", answer, height=200)
-
                     except Exception as e:
                         st.error(f"Something went wrong: {e}")
 
@@ -574,15 +634,8 @@ elif feature == "Student Assistant":
                 with st.spinner("Thinking..."):
                     try:
                         payload = {"prompt": user_input}
-                        headers = {"Content-Type": "application/json"}
 
-                        with requests.post(
-                            urljoin(BACKEND_ENDPOINT, "/student-assistant"),
-                            json=payload,
-                            headers=headers,
-                            stream=True,
-                            timeout=120
-                        ) as response:
+                        with backend_call("/student-assistant", payload, st.session_state.session_id) as response:
                             response.raise_for_status()
 
                             # Create containers for different sections
@@ -677,17 +730,8 @@ elif feature == "Socratic Tutor":
                         payload = {
                             "prompt": user_input
                         }
-                        headers = {
-                            "Content-Type": "application/json",
-                        }
 
-                        with requests.post(
-                            urljoin(BACKEND_ENDPOINT, "/socratic-tutor"),
-                            json=payload,
-                            headers=headers,
-                            stream=True,
-                            timeout=120
-                        ) as response:
+                        with backend_call("/socratic-tutor", payload, st.session_state.session_id) as response:
                             response.raise_for_status()
                             tutor_response = ""
                             st.success("Here's what your tutor has to say:")

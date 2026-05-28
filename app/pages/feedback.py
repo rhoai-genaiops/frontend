@@ -156,12 +156,12 @@ if feature_flags.get("ab_testing", False):
             elif rate_a > rate_b and rate_a >= 70:
                 st.success(
                     f"**Prompt A is the clear winner** with a {rate_a:.0f}% win rate over {ab_total} comparisons. "
-                    "Consider promoting it to your primary `summarize.prompt`."
+                    "Consider promoting it to your primary `summarization.prompt`."
                 )
             elif rate_b > rate_a and rate_b >= 70:
                 st.success(
                     f"**Prompt B is the clear winner** with a {rate_b:.0f}% win rate over {ab_total} comparisons. "
-                    "Consider promoting it to your primary `summarize.prompt`."
+                    "Consider promoting it to your primary `summarization.prompt`."
                 )
             elif abs(rate_a - rate_b) <= 20:
                 st.warning(

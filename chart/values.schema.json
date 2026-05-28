@@ -4,12 +4,6 @@
   "title": "Canopy UI Helm Chart Values Schema",
   "description": "Schema for validating values.yaml configuration for the Canopy UI Helm chart",
   "properties": {
-    "SYSTEM_PROMPT": {
-      "type": "string",
-      "description": "System prompt to be used by the application",
-      "default": "Summarize this text.",
-      "minLength": 1
-    },
     "MODEL_NAME": {
       "type": "string",
       "description": "Name of the model to be used",
@@ -25,6 +19,37 @@
       "type": "string",
       "description": "Endpoint URL for the backend service",
       "default": ""
+    },
+    "chart_path": {
+      "type": "string",
+      "description": "Path to the Helm chart in the repository"
+    },
+    "repo_url": {
+      "type": "string",
+      "description": "URL of the source repository"
+    },
+    "target_revision": {
+      "type": "string",
+      "description": "Git branch, tag, or commit to deploy from",
+      "default": "main"
+    },
+    "MLFLOW_TRACKING_URI": {
+      "type": "string",
+      "description": "MLflow tracking server URI",
+      "examples": [
+        "https://mlflow.apps.example.com/mlflow"
+      ]
+    },
+    "MLFLOW_PROMPT_NAME": {
+      "type": "string",
+      "description": "MLflow prompt registry name to fetch the system prompt",
+      "default": "summarization",
+      "minLength": 1
+    },
+    "MLFLOW_PROMPT_VERSION": {
+      "type": "string",
+      "description": "MLflow prompt version to fetch (alias or number)",
+      "default": "latest"
     },
     "image": {
       "type": "object",
@@ -45,20 +70,11 @@
       },
       "required": ["name", "tag"],
       "additionalProperties": false
-    },
-    "chart_path": {
-      "type": "string",
-      "description": "Target namespace for deployment (format: userX-environment)",
-      "examples": []
-    },
-    "repo_url": {
-      "type": "string",
-      "description": "Target namespace for deployment (format: userX-environment)",
-      "examples": []
     }
   },
   "required": [
-    "SYSTEM_PROMPT",
+    "MLFLOW_TRACKING_URI",
+    "MLFLOW_PROMPT_NAME",
     "MODEL_NAME"
   ],
   "additionalProperties": false

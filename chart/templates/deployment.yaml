@@ -15,43 +15,35 @@ spec:
       app.kubernetes.io/name: canopy-ui
   template:
     metadata:
-      annotations:
-        # Use local instrumentation CR for traces (metrics stay with RHOAI)
-        instrumentation.opentelemetry.io/inject-python: "true"
       labels:
         app: canopy-ui
         app.kubernetes.io/name: canopy-ui
         monitoring.opendatahub.io/scrape: 'true'
     spec:
+      serviceAccountName: canopy-fe
       containers:
         - name: canopy-ui
           image: quay.io/rhoai-genaiops/{{ .Values.image.name }}:{{ .Values.image.tag }}
+          imagePullPolicy: Always
           ports:
             - containerPort: 8501
+            - containerPort: 8000
           env:
            {{- if not .Values.BACKEND_ENDPOINT}}
             - name: LLM_ENDPOINT
               value: "{{ .Values.LLM_ENDPOINT }}"
-            - name: SYSTEM_PROMPT
-              value: "{{ .Values.SYSTEM_PROMPT}}"
             - name: MODEL_NAME
               value: "{{ .Values.MODEL_NAME }}"
           {{- else }}
             - name: BACKEND_ENDPOINT
               value: "{{ .Values.BACKEND_ENDPOINT }}"
           {{- end }}
-            - name: OTEL_TRACES_SAMPLER_ARG
-              value: "1.0"
-            - name: OTEL_LOGS_EXPORTER
-              value: "none"
-            # TRACES go to user's toolings namespace collector
-            - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
-              value: "http://trace-collector-collector.{{ .Values.toolingsNamespace | default (printf "%s-toolings" (trimSuffix "-canopy" .Release.Namespace | trimSuffix "-test" | trimSuffix "-prod")) }}.svc.cluster.local:4318/v1/traces"
-            # METRICS stay with RHOAI (unchanged)
-            - name: OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
-              value: "http://data-science-collector-collector-headless.redhat-ods-monitoring.svc.cluster.local:4318/v1/metrics"
-            # General endpoint for traces
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://trace-collector-collector.{{ .Values.toolingsNamespace | default (printf "%s-toolings" (trimSuffix "-canopy" .Release.Namespace | trimSuffix "-test" | trimSuffix "-prod")) }}.svc.cluster.local:4318"
-            - name: TELEMETRY_SINKS
-              value: "otel_trace"
+            - name: MLFLOW_TRACKING_URI
+              value: "{{ .Values.MLFLOW_TRACKING_URI }}"
+            - name: MLFLOW_PROMPT_NAME
+              value: "{{ .Values.MLFLOW_PROMPT_NAME | default "summarization" }}"
+            - name: MLFLOW_PROMPT_VERSION
+              value: "{{ .Values.MLFLOW_PROMPT_VERSION | default "latest" }}"
+            - name: MLFLOW_TRACKING_INSECURE_TLS
+              value: "true"
+

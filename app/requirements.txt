@@ -1,3 +1,5 @@
 streamlit==1.50.0
-requests>=2.25.0
+openai>=1.0.0
 Pillow>=9.0.0
+mlflow[kubernetes]>=2.15.0
+prometheus_client>=0.20.0

@@ -18,12 +18,14 @@ The following table lists the configurable parameters and their default values:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `LLM_ENDPOINT` | Language model endpoint URL | `""` |
-| `SYSTEM_PROMPT` | Default system prompt for the model | `"Summarize this text."` |
 | `MODEL_NAME` | Name of the model to use | `"llama32"` |
-| `BACKEND_ENDPOINT` | Name of the llamastack backend | `""` |
-| `image.name` | Name of the image | `"canopy-ui"` |
-| `image.tag` | Tag of the image | `"simple-0.1"` |
+| `LLM_ENDPOINT` | Language model endpoint URL | `""` |
+| `BACKEND_ENDPOINT` | Endpoint URL for the backend service | `""` |
+| `MLFLOW_TRACKING_URI` | MLflow tracking server URI | `""` |
+| `MLFLOW_PROMPT_NAME` | MLflow prompt registry name to fetch the system prompt | `"summarization"` |
+| `MLFLOW_PROMPT_VERSION` | MLflow prompt version to fetch (alias or number) | `"latest"` |
+| `image.name` | Name of the container image | `"canopy-ui"` |
+| `image.tag` | Tag of the container image | `"simple-0.3"` |
 
 
 ## Components
@@ -34,7 +36,6 @@ The following table lists the configurable parameters and their default values:
 
 ## Chart Information
 
-- **Version**: 1.0.0
-- **App Version**: 0.2
-- **Image**: `quay.io/rlundber/canopy-ui:0.2`
+- **Version**: 0.0.9
+- **Image**: `quay.io/rhoai-genaiops/canopy-ui:simple-0.3`
   
