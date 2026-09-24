@@ -10,6 +10,7 @@ from prometheus_client import start_http_server, Counter, Histogram
 
 # Load environment variables
 BACKEND_ENDPOINT = os.getenv("BACKEND_ENDPOINT", "http://localhost:8000")
+OPENSHIFT_NAMESPACE = os.getenv("OPENSHIFT_NAMESPACE")
 
 @st.cache_resource
 def _init_metrics():
@@ -101,6 +102,11 @@ st.set_page_config(
 # Sidebar navigation
 logo_path = "logo.png"
 logo = Image.open(logo_path)
+
+# Display the current OpenShift project (injected) for easier navigation 
+if OPENSHIFT_NAMESPACE:
+    st.sidebar.info(f"**Environment**: `{OPENSHIFT_NAMESPACE}`")
+
 st.sidebar.image(logo, width='stretch')
 st.sidebar.title("Canopy 🌿")
 
